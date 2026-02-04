@@ -108,13 +108,15 @@ const engine = WAAudioEngine.getInstance();
 - [x] 基础波形显示
 - [x] 简单播放控制
 
-### Phase 2: 效果器系统 (v1.1.0) 🔄 当前
-- [x] 均衡器 (3段 EQ)
-- [x] 压缩器
-- [ ] 混响 (Convolution)
-- [ ] 延迟 (Delay)
-- [ ] 失真 (Distortion)
-- [ ] 效果器路由系统
+### Phase 2: 效果器系统 (v1.1.0) ✅ 已完成
+- [x] WAAudioEQ (3段均衡器) - 低/中/高调节
+- [x] WAAudioCompressor (压缩器) - 阈值/比率/起音/释放
+- [x] WAAudioReverb (混响) - 房间大小/混响时长
+- [x] WAAudioDelay (延迟) - 延迟时间/反馈/干湿比
+- [x] WAAudioDistortion (失真) - 失真量调节
+- [x] WAAudioEffectChain (效果器链)
+- [x] WAAudioEffectFactory (工厂类)
+- [x] 预设功能 (bassBoost, vocalBoost, bright 等)
 
 ### Phase 3: 录音功能 (v1.2.0)
 - [ ] 麦克风录音
@@ -211,19 +213,45 @@ interface WAAudioMixer {
 
 | 模块 | 文件 | 状态 | 类型 |
 |------|------|------|------|
-| Core | index.ts | ✅ 完成 | Class |
-| Core | context.ts | ⚠️ 内联 | - |
-| Source | file-source.ts | ❌ 未创建 | - |
-| Source | oscillator.ts | ✅ 完成 | Class |
-| Effects | eq.ts | ✅ 完成 | Class |
-| Effects | compressor.ts | ✅ 完成 | Class |
-| Effects | reverb.ts | ✅ 完成 | Class |
-| Effects | delay.ts | ✅ 完成 | Class |
-| Effects | distortion.ts | ✅ 完成 | Class |
-| Analyser | spectrum.ts | ✅ 完成 | Class |
-| Recorder | index.ts | ✅ 完成 | Class |
-| Engine | mixer.ts | ❌ 未创建 | - |
-| Engine | track.ts | ❌ 未创建 | - |
+| Core | index.ts | ✅ 完成 | 主入口 |
+| Source | file-source.ts | ✅ 完成 | WAAudioSource |
+| Source | oscillator.ts | ✅ 完成 | WAAudioOscillator |
+| Effects | effects/index.ts | ✅ 完成 | EQ/Compressor/Reverb/Delay/Distortion |
+| Effects | effect-chain.ts | ✅ 完成 | WAAudioEffectChain |
+| Analyser | analyser.ts | ✅ 完成 | WAAudioAnalyser |
+| Recorder | recorder.ts | ✅ 完成 | WAAudioRecorder |
+| Engine | mixer.ts | ✅ 完成 | WAAudioMixer + WAAudioTrack |
+
+## ✅ Phase 2 效果器系统完成清单
+
+### WAAudioEQ (均衡器)
+- [x] 低频 Shelf (-12dB ~ +12dB)
+- [x] 中频 Peaking (-12dB ~ +12dB)
+- [x] 高频 Shelf (-12dB ~ +12dB)
+- [x] 预设: bassBoost / vocalBoost / bright
+
+### WAAudioCompressor (压缩器)
+- [x] 阈值 (-100dB ~ 0dB)
+- [x] 压缩比 (1:1 ~ 20:1)
+- [x] 起音时间 (0 ~ 1秒)
+- [x] 释放时间 (0 ~ 1秒)
+- [x] 预设: soft / hard
+
+### WAAudioReverb (混响)
+- [x] 房间大小 (0 ~ 1)
+- [x] 干湿比 (0 ~ 1)
+- [x] 脉冲响应生成
+- [x] 预设: smallRoom / hall / plate / cathedral
+
+### WAAudioDelay (延迟)
+- [x] 延迟时间 (0 ~ 5秒)
+- [x] 反馈量 (0 ~ 0.95)
+- [x] 干湿比 (0 ~ 1)
+- [x] 预设: simple / dub / slap
+
+### WAAudioDistortion (失真)
+- [x] 失真量 (0 ~ 100)
+- [x] 预设: light / medium / heavy / fuzz
 
 ## 🎨 UI 组件规划
 
@@ -257,20 +285,23 @@ Workstation (主界面)
 
 ## 🚀 下一步任务
 
-### Priority 0 (当前)
-1. **重构核心代码** - 分离 source 模块
-2. **实现效果器路由** - 效果器可自由连接
-3. **完善 EQ 交互** - 拖拽频点
+### Phase 3: 录音功能 (v1.2.0)
+1. [ ] 麦克风实时录音
+2. [ ] 录音波形预览
+3. [ ] 录音文件导出 (WAV)
+4. [ ] 录音电平监控
 
-### Priority 1
-1. **添加录音功能** - 麦克风实时录音
-2. **多轨道支持** - 基础混音引擎
-3. **导出功能** - WAV 文件导出
+### Phase 4: UI 交互完善 (v1.3.0)
+1. [ ] 效果器面板交互 (拖拽/实时调节)
+2. [ ] 波形编辑器缩放/选择
+3. [ ] 时间轴标记点
+4. [ ] 键盘快捷键
 
-### Priority 2
-1. **波形编辑** - 剪辑/淡入淡出
-2. **高级效果** - 降噪/变速
-3. **预设系统** - 保存/加载设置
+### Phase 5: 多轨混音 (v2.0.0)
+1. [ ] 多轨道支持
+2. [ ] 轨道音量/声像/独奏
+3. [ ] 混音器界面
+4. [ ] 轨道效果器路由
 
 ---
 
