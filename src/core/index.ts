@@ -179,4 +179,4 @@ export { WAAudioRecorder };
 export { WAAudioMixer, WAAudioTrack };
 export { WAAudioEditor } from './editor';
 export { exportWAV, exportWebM } from './export';
-export type { WAAudioMarkers, Marker, MarkerType, MarkerRegion } from './markers';
+export * from './markers';
