@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import WAAudioContext from './core';
   import AudioWorkstation from './demos/workstation/AudioWorkstation.svelte';
+  import MultitrackMixer from './demos/workstation/MultitrackMixer.svelte';
   
   let currentDemo = 'workstation';
   
@@ -17,11 +18,16 @@
       <button class:active={currentDemo === 'workstation'} on:click={() => setDemo('workstation')}>
         🎚️ 音频工作站
       </button>
+      <button class:active={currentDemo === 'multitrack'} on:click={() => setDemo('multitrack')}>
+        🎛️ 多轨混音
+      </button>
     </div>
   </nav>
   
   {#if currentDemo === 'workstation'}
     <AudioWorkstation />
+  {:else if currentDemo === 'multitrack'}
+    <MultitrackMixer />
   {/if}
 </main>
 
