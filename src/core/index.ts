@@ -177,3 +177,5 @@ export { WAAudioEQ, WAAudioCompressor, WAAudioReverb, WAAudioDelay, WAAudioDisto
 export { WAAudioEffectFactory, WAAudioEffectChain };
 export { WAAudioRecorder };
 export { WAAudioMixer, WAAudioTrack };
+export { WAAudioEditor } from './editor';
+export { exportWAV, exportWebM } from './export';
