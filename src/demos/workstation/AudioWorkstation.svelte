@@ -1,53 +1,66 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import WAAudioContext from '../core/index';
-  import { WAAudioAnalyser } from '../core/analyser';
   
   // 状态
   let context: WAAudioContext;
-  let analyser: WAAudioAnalyser;
+  let audioContext: AudioContext;
+  let analyser: AnalyserNode | null = null;
   let source: AudioBufferSourceNode | null = null;
   let audioBuffer: AudioBuffer | null = null;
-  let audioContext: AudioContext;
   
   // UI 状态
   let isPlaying = false;
+  let isPaused = false;
   let currentTime = 0;
   let duration = 0;
   let volume = 1;
   let playbackRate = 1;
   let zoom = 1;
+  let loopStart = 0;
+  let loopEnd = 0;
+  let isLooping = false;
   
   // 文件
   let selectedFile: File | null = null;
   let fileName = '';
   
-  // Canvas 引用
+  // Canvas
   let waveformCanvas: HTMLCanvasElement;
   let spectrumCanvas: HTMLCanvasElement;
-  let meterCanvas: HTMLCanvasElement;
   let waveformCtx: CanvasRenderingContext2D;
   let spectrumCtx: CanvasRenderingContext2D;
-  let meterCtx: CanvasRenderingContext2D;
   
-  // 动画帧
+  // 动画
   let animationId: number;
   let startTime = 0;
-  let pauseTime = 0;
+  let pauseOffset = 0;
+  
+  // 颜色主题
+  const theme = {
+    bg: '#1e1e1e',
+    panel: '#2d2d2d',
+    accent: '#007acc',
+    accentHover: '#005a9e',
+    waveform: '#4ecdc4',
+    waveformBg: '#1a1a2e',
+    spectrum: '#667eea',
+    text: '#e0e0e0',
+    textMuted: '#888888',
+    border: '#404040'
+  };
   
   onMount(() => {
     context = new WAAudioContext();
     audioContext = context.getContext();
-    analyser = context.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.connect(audioContext.destination);
     
-    // 初始化 Canvas
     waveformCtx = waveformCanvas.getContext('2d')!;
     spectrumCtx = spectrumCanvas.getContext('2d')!;
-    meterCtx = meterCanvas.getContext('2d')!;
     
-    draw();
+    // 初始化频谱
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.connect(audioContext.destination);
   });
   
   onDestroy(() => {
@@ -69,10 +82,10 @@
     const arrayBuffer = await file.arrayBuffer();
     audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     duration = audioBuffer.duration;
+    loopEnd = duration;
     currentTime = 0;
-    
+    pauseOffset = 0;
     drawWaveform();
-    updateTime();
   }
   
   function play() {
@@ -87,25 +100,30 @@
     source.buffer = audioBuffer;
     source.playbackRate.value = playbackRate;
     
-    // 创建增益节点控制音量
     const gainNode = audioContext.createGain();
     gainNode.gain.value = volume;
     
     source.connect(gainNode);
-    gainNode.connect(analyser.getAnalyser());
-    analyser.getAnalyser().connect(audioContext.destination);
+    gainNode.connect(analyser!);
     
-    source.start(0, currentTime);
+    const startOffset = pauseOffset;
+    source.start(0, startOffset);
+    startTime = audioContext.currentTime - startOffset / playbackRate;
+    
     isPlaying = true;
-    startTime = audioContext.currentTime - currentTime / playbackRate;
+    isPaused = false;
     
     animate();
+    
     source.onended = () => {
-      if (playbackRate > 1) {
-        loop();
+      if (isLooping) {
+        pauseOffset = loopStart;
+        play();
+      } else if (playbackRate > 1) {
+        pauseOffset = 0;
+        play();
       } else {
-        isPlaying = false;
-        currentTime = 0;
+        stop();
       }
     };
   }
@@ -113,10 +131,11 @@
   function pause() {
     if (source) {
       source.stop();
+      pauseOffset = currentTime;
       source = null;
     }
-    pauseTime = currentTime;
     isPlaying = false;
+    isPaused = true;
   }
   
   function stop() {
@@ -125,14 +144,23 @@
       source = null;
     }
     isPlaying = false;
+    isPaused = false;
     currentTime = 0;
-    pauseTime = 0;
+    pauseOffset = 0;
   }
   
-  function loop() {
+  function seek(e: MouseEvent) {
     if (!audioBuffer) return;
-    currentTime = 0;
-    play();
+    const rect = (e.target as HTMLElement).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = x / rect.width;
+    currentTime = ratio * duration;
+    pauseOffset = currentTime;
+    
+    if (isPlaying) {
+      source?.stop();
+      play();
+    }
   }
   
   function animate() {
@@ -141,8 +169,9 @@
     currentTime = (audioContext.currentTime - startTime) * playbackRate;
     
     if (currentTime >= duration) {
-      if (playbackRate > 1) {
-        loop();
+      if (isLooping) {
+        pauseOffset = loopStart;
+        play();
       } else {
         stop();
       }
@@ -150,8 +179,6 @@
     
     drawWaveform();
     drawSpectrum();
-    drawMeter();
-    
     animationId = requestAnimationFrame(animate);
   }
   
@@ -162,33 +189,39 @@
     const height = waveformCanvas.height;
     
     // 背景
-    waveformCtx.fillStyle = '#1a1a2e';
+    waveformCtx.fillStyle = theme.waveformBg;
     waveformCtx.fillRect(0, 0, width, height);
     
     if (!audioBuffer) return;
     
     const data = audioBuffer.getChannelData(0);
-    const step = Math.ceil(data.length / width / zoom);
-    const amp = height / 2;
+    const samples = Math.min(data.length, width * zoom * 10);
+    const step = Math.floor(data.length / samples);
+    const amp = height / 2 * 0.9;
+    const centerY = height / 2;
     
-    waveformCtx.fillStyle = '#667eea';
+    // 绘制波形
+    waveformCtx.strokeStyle = theme.waveform;
+    waveformCtx.lineWidth = 1.5;
     waveformCtx.beginPath();
     
     for (let i = 0; i < width; i++) {
-      const min = 1.0;
-      const max = -1.0;
-      let idx = i * step;
-      let datum = data[idx];
+      const dataIndex = Math.floor(i * step);
+      if (dataIndex >= data.length) break;
       
-      for (let j = 0; j < step; j++) {
-        const val = data[idx + j];
-        if (val < min) datum = val;
-        if (val > max) datum = val;
-      }
-      
-      const y = (1 + datum) * amp;
-      waveformCtx.fillRect(i, y, 1, 1);
+      const amplitude = data[dataIndex] * amp;
+      waveformCtx.moveTo(i, centerY - amplitude);
+      waveformCtx.lineTo(i, centerY + amplitude);
     }
+    waveformCtx.stroke();
+    
+    // 中心线
+    waveformCtx.strokeStyle = 'rgba(255,255,255,0.1)';
+    waveformCtx.lineWidth = 1;
+    waveformCtx.beginPath();
+    waveformCtx.moveTo(0, centerY);
+    waveformCtx.lineTo(width, centerY);
+    waveformCtx.stroke();
     
     // 播放头
     const playheadX = (currentTime / duration) * width;
@@ -198,6 +231,14 @@
     waveformCtx.moveTo(playheadX, 0);
     waveformCtx.lineTo(playheadX, height);
     waveformCtx.stroke();
+    
+    // 循环区域高亮
+    if (isLooping) {
+      const loopStartX = (loopStart / duration) * width;
+      const loopEndX = (loopEnd / duration) * width;
+      waveformCtx.fillStyle = 'rgba(255, 107, 107, 0.2)';
+      waveformCtx.fillRect(loopStartX, 0, loopEndX - loopStartX, height);
+    }
   }
   
   function drawSpectrum() {
@@ -206,82 +247,35 @@
     const width = spectrumCanvas.width;
     const height = spectrumCanvas.height;
     
-    spectrumCtx.fillStyle = '#1a1a2e';
+    spectrumCtx.fillStyle = theme.waveformBg;
     spectrumCtx.fillRect(0, 0, width, height);
     
-    analyser.update();
-    const data = analyser.getFrequencyData();
-    const barWidth = width / data.length;
+    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(dataArray);
     
-    const colors = ['#667eea', '#764ba2', '#f093fb', '#f5576c'];
+    const barCount = 64;
+    const barWidth = width / barCount;
     
-    for (let i = 0; i < data.length; i++) {
-      const barHeight = (data[i] / 255) * height;
+    const gradient = spectrumCtx.createLinearGradient(0, height, 0, 0);
+    gradient.addColorStop(0, '#667eea');
+    gradient.addColorStop(0.5, '#764ba2');
+    gradient.addColorStop(1, '#f093fb');
+    
+    for (let i = 0; i < barCount; i++) {
+      const value = dataArray[Math.floor(i * dataArray.length / barCount)];
+      const barHeight = (value / 255) * height * 0.9;
       const x = i * barWidth;
       
-      const gradient = spectrumCtx.createLinearGradient(0, height, 0, height - barHeight);
-      gradient.addColorStop(0, colors[i % colors.length]);
-      gradient.addColorStop(1, colors[(i + 1) % colors.length]);
-      
       spectrumCtx.fillStyle = gradient;
-      spectrumCtx.fillRect(x, height - barHeight, barWidth - 1, barHeight);
+      spectrumCtx.fillRect(x + 1, height - barHeight, barWidth - 2, barHeight);
     }
   }
   
-  function drawMeter() {
-    if (!meterCtx || !analyser) return;
-    
-    const width = meterCanvas.width;
-    const height = meterCanvas.height;
-    
-    analyser.update();
-    const data = analyser.getFrequencyData();
-    
-    // 计算 RMS
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      sum += data[i] * data[i];
-    }
-    const rms = Math.sqrt(sum / data.length) / 255;
-    const db = 20 * Math.log10(rms + 0.001);
-    const normalized = Math.max(0, Math.min(1, (db + 60) / 60));
-    
-    meterCtx.fillStyle = '#1a1a2e';
-    meterCtx.fillRect(0, 0, width, height);
-    
-    // 电平条
-    const meterHeight = normalized * height;
-    const gradient = meterCtx.createLinearGradient(0, height, 0, 0);
-    gradient.addColorStop(0, '#00ff00');
-    gradient.addColorStop(0.7, '#ffff00');
-    gradient.addColorStop(1, '#ff0000');
-    
-    meterCtx.fillStyle = gradient;
-    meterCtx.fillRect(0, height - meterHeight, width, meterHeight);
-    
-    // 刻度
-    meterCtx.strokeStyle = 'rgba(255,255,255,0.3)';
-    meterCtx.lineWidth = 1;
-    for (let i = 1; i < 6; i++) {
-      const y = (i / 6) * height;
-      meterCtx.beginPath();
-      meterCtx.moveTo(0, y);
-      meterCtx.lineTo(width, y);
-      meterCtx.stroke();
-    }
-  }
-  
-  function draw() {
-    drawWaveform();
-    drawSpectrum();
-    drawMeter();
-  }
-  
-  function updateTime() {
-    const mins = Math.floor(currentTime / 60);
-    const secs = Math.floor(currentTime % 60);
-    const ms = Math.floor((currentTime % 1) * 100);
-    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+  function formatTime(seconds: number): string {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 100);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   }
   
   function setVolume(e: Event) {
@@ -291,107 +285,210 @@
   function setPlaybackRate(e: Event) {
     playbackRate = parseFloat((e.target as HTMLInputElement).value);
   }
+  
+  function toggleLoop() {
+    isLooping = !isLooping;
+  }
+  
+  function skipBackward() {
+    currentTime = Math.max(0, currentTime - 10);
+    pauseOffset = currentTime;
+    if (isPlaying) {
+      source?.stop();
+      play();
+    }
+  }
+  
+  function skipForward() {
+    currentTime = Math.min(duration, currentTime + 10);
+    pauseOffset = currentTime;
+    if (isPlaying) {
+      source?.stop();
+      play();
+    }
+  }
 </script>
 
-<div class="workstation">
-  <header class="header">
-    <h1>🎵 WAAudio Studio</h1>
-    <div class="file-info">
-      <input type="file" accept="audio/*" on:change={handleFileSelect} />
-      <span class="filename">{fileName || '未选择文件'}</span>
+<div class="studio">
+  <!-- 顶部工具栏 -->
+  <header class="toolbar">
+    <div class="toolbar-left">
+      <div class="logo">
+        <span class="logo-icon">🎵</span>
+        <span class="logo-text">WAAudio</span>
+        <span class="logo-version">Studio</span>
+      </div>
+    </div>
+    
+    <div class="toolbar-center">
+      <div class="file-info">
+        <input type="file" accept="audio/*" on:change={handleFileSelect} id="file-input" hidden />
+        <label for="file-input" class="file-btn">
+          📂 打开文件
+        </label>
+        <span class="file-name">{fileName || '未选择音频文件'}</span>
+      </div>
+    </div>
+    
+    <div class="toolbar-right">
+      <button class="tool-btn" title="导入">📥</button>
+      <button class="tool-btn" title="导出">📤</button>
+      <button class="tool-btn" title="设置">⚙️</button>
     </div>
   </header>
   
-  <div class="main-area">
-    <!-- 波形编辑器 -->
-    <div class="waveform-section">
-      <div class="section-header">
-        <span>波形</span>
+  <!-- 主工作区 -->
+  <div class="workspace">
+    <!-- 波形视图 -->
+    <div class="waveform-panel">
+      <div class="panel-header">
+        <span>波形编辑器</span>
         <div class="zoom-controls">
-          <button on:click={() => zoom = Math.max(0.25, zoom * 0.5)}>-</button>
-          <span>{Math.round(zoom * 100)}%</span>
+          <button on:click={() => zoom = Math.max(0.25, zoom * 0.5)}>−</button>
+          <span class="zoom-level">{Math.round(zoom * 100)}%</span>
           <button on:click={() => zoom = Math.min(4, zoom * 2)}>+</button>
         </div>
       </div>
-      <canvas bind:this={waveformCanvas} width="1200" height="150"></canvas>
+      <div class="waveform-container" on:click={seek} role="slider" tabindex="0" aria-label="波形位置">
+        <canvas bind:this={waveformCanvas} width="1400" height="120"></canvas>
+      </div>
+      <div class="time-ruler">
+        <span>{formatTime(currentTime)}</span>
+        <span class="ruler-center">{formatTime(duration / 2)}</span>
+        <span>{formatTime(duration)}</span>
+      </div>
     </div>
     
-    <!-- 频谱分析器 -->
-    <div class="spectrum-section">
-      <div class="section-header">
-        <span>频谱</span>
+    <!-- 频谱视图 -->
+    <div class="spectrum-panel">
+      <div class="panel-header">
+        <span>实时频谱</span>
       </div>
-      <canvas bind:this={spectrumCanvas} width="1200" height="100"></canvas>
+      <canvas bind:this={spectrumCanvas} width="1400" height="80"></canvas>
     </div>
     
-    <!-- 控制面板 -->
-    <div class="controls-section">
-      <!-- 时间显示 -->
-      <div class="time-display">
-        <span class="current-time">{updateTime()}</span>
-        <span class="separator">/</span>
-        <span class="total-time">
-          {Math.floor(duration / 60)}:{Math.floor(duration % 60).toString().padStart(2, '0')}
-        </span>
-      </div>
-      
+    <!-- 控制台 -->
+    <div class="console-panel">
       <!-- 播放控制 -->
-      <div class="playback-controls">
-        <button class="btn" on:click={() => currentTime = Math.max(0, currentTime - 5)}>⏪ 5s</button>
-        <button class="btn btn-primary" on:click={play}>
-          {isPlaying ? '⏸️ 暂停' : '▶️ 播放'}
-        </button>
-        <button class="btn" on:click={stop}>⏹️ 停止</button>
-        <button class="btn" on:click={loop}>🔁 循环</button>
-        <button class="btn" on:click={() => currentTime = Math.min(duration, currentTime + 5)}>5s ⏩</button>
+      <div class="transport-controls">
+        <div class="time-display">
+          <span class="current">{formatTime(currentTime)}</span>
+          <span class="separator">/</span>
+          <span class="total">{formatTime(duration)}</span>
+        </div>
+        
+        <div class="buttons">
+          <button class="transport-btn" on:click={skipBackward} title="后退10秒">
+            ⏪
+          </button>
+          <button class="transport-btn main" on:click={play}>
+            {isPlaying ? '⏸️' : '▶️'}
+          </button>
+          <button class="transport-btn" on:click={stop} title="停止">
+            ⏹️
+          </button>
+          <button class="transport-btn" on:click={skipForward} title="前进10秒">
+            ⏩
+          </button>
+          <button class="transport-btn loop" class:active={isLooping} on:click={toggleLoop} title="循环">
+            🔁
+          </button>
+        </div>
+        
+        <div class="status">
+          {#if isPlaying}
+            <span class="status-playing">🔴 播放中</span>
+          {:else if isPaused}
+            <span class="status-paused">🟡 已暂停</span>
+          {:else}
+            <span class="status-stopped">⚫ 已停止</span>
+          {/if}
+        </div>
       </div>
       
-      <!-- 音量 -->
-      <div class="volume-control">
-        <span>🔊</span>
-        <input type="range" min="0" max="1" step="0.01" value={volume} on:input={setVolume} />
-        <span>{Math.round(volume * 100)}%</span>
-      </div>
-      
-      <!-- 播放速度 -->
-      <div class="speed-control">
-        <span>🚀</span>
-        <input type="range" min="0.25" max="2" step="0.25" value={playbackRate} on:input={setPlaybackRate} />
-        <span>{playbackRate}x</span>
+      <!-- 音量/速度 -->
+      <div class="sliders">
+        <div class="slider-group">
+          <label>🔊 音量</label>
+          <input type="range" min="0" max="1" step="0.01" {volume} on:input={setVolume} />
+          <span class="value">{Math.round(volume * 100)}%</span>
+        </div>
+        <div class="slider-group">
+          <label>🚀 速度</label>
+          <input type="range" min="0.25" max="2" step="0.25" {playbackRate} on:input={setPlaybackRate} />
+          <span class="value">{playbackRate}x</span>
+        </div>
       </div>
     </div>
     
-    <!-- 电平表 -->
-    <div class="meter-section">
-      <div class="section-header">
-        <span>电平</span>
-      </div>
-      <div class="meters">
-        <canvas bind:this={meterCanvas} class="meter-canvas" width="40" height="200"></canvas>
-      </div>
-    </div>
-    
-    <!-- 效果器面板（预留） -->
-    <div class="effects-section">
-      <div class="section-header">
+    <!-- 效果器插槽 -->
+    <div class="effects-rack">
+      <div class="panel-header">
         <span>效果器</span>
+        <button class="add-effect-btn">+ 添加效果</button>
       </div>
       <div class="effects-grid">
-        <div class="effect-slot">
-          <span>EQ</span>
-          <button class="btn-small">未加载</button>
+        <div class="effect-unit">
+          <div class="effect-header">
+            <span>🎚️ 均衡器</span>
+            <label class="toggle">
+              <input type="checkbox" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-controls">
+            <div class="eq-band">
+              <span>低</span>
+              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+            </div>
+            <div class="eq-band">
+              <span>中</span>
+              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+            </div>
+            <div class="eq-band">
+              <span>高</span>
+              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+            </div>
+          </div>
         </div>
-        <div class="effect-slot">
-          <span>压缩</span>
-          <button class="btn-small">未加载</button>
+        
+        <div class="effect-unit disabled">
+          <div class="effect-header">
+            <span>🔊 压缩器</span>
+            <label class="toggle">
+              <input type="checkbox" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-content">
+            <span class="placeholder">未加载</span>
+          </div>
         </div>
-        <div class="effect-slot">
-          <span>混响</span>
-          <button class="btn-small">未加载</button>
+        
+        <div class="effect-unit disabled">
+          <div class="effect-header">
+            <span>🌊 混响</span>
+            <label class="toggle">
+              <input type="checkbox" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-content">
+            <span class="placeholder">未加载</span>
+          </div>
         </div>
-        <div class="effect-slot">
-          <span>延迟</span>
-          <button class="btn-small">未加载</button>
+        
+        <div class="effect-unit disabled">
+          <div class="effect-header">
+            <span>⏱️ 延迟</span>
+            <label class="toggle">
+              <input type="checkbox" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-content">
+            <span class="placeholder">未加载</span>
+          </div>
         </div>
       </div>
     </div>
@@ -399,181 +496,420 @@
 </div>
 
 <style>
-  .workstation {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  .studio {
+    background: #1e1e1e;
     min-height: 100vh;
-    color: white;
-    padding: 20px;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
   
-  .header {
+  /* 工具栏 */
+  .toolbar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding: 12px 20px;
+    background: #252525;
+    border-bottom: 1px solid #404040;
   }
   
-  .header h1 {
-    margin: 0;
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  
+  .logo-icon {
     font-size: 1.5em;
+  }
+  
+  .logo-text {
+    font-size: 1.2em;
+    font-weight: bold;
     background: linear-gradient(45deg, #667eea, #764ba2);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
   
+  .logo-version {
+    font-size: 0.7em;
+    padding: 2px 6px;
+    background: #404040;
+    border-radius: 4px;
+    margin-left: 5px;
+  }
+  
   .file-info {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 15px;
   }
   
-  .filename {
-    opacity: 0.7;
+  .file-btn {
+    padding: 8px 16px;
+    background: #007acc;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: background 0.2s;
+  }
+  
+  .file-btn:hover {
+    background: #005a9e;
+  }
+  
+  .file-name {
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #888;
     font-size: 0.9em;
   }
   
-  .main-area {
+  .tool-btn {
+    padding: 8px 12px;
+    background: transparent;
+    border: 1px solid #404040;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 1em;
+    transition: all 0.2s;
+  }
+  
+  .tool-btn:hover {
+    background: #404040;
+  }
+  
+  /* 工作区 */
+  .workspace {
+    padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 15px;
   }
   
-  .section-header {
+  .panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 10px 0;
-    font-weight: bold;
-    opacity: 0.8;
+    font-weight: 500;
+    color: #e0e0e0;
+  }
+  
+  /* 波形面板 */
+  .waveform-panel, .spectrum-panel {
+    background: #2d2d2d;
+    border-radius: 10px;
+    padding: 15px;
+  }
+  
+  .waveform-container {
+    cursor: pointer;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  
+  .waveform-container:hover {
+    box-shadow: 0 0 0 2px #007acc;
   }
   
   canvas {
-    border-radius: 8px;
+    display: block;
     width: 100%;
-    background: #1a1a2e;
+    border-radius: 6px;
   }
   
-  .controls-section {
+  .time-ruler {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0 0;
+    font-family: 'SF Mono', 'Monaco', monospace;
+    font-size: 0.8em;
+    color: #888;
+  }
+  
+  .ruler-center {
+    opacity: 0.5;
+  }
+  
+  /* 控制台 */
+  .console-panel {
+    background: #2d2d2d;
+    border-radius: 10px;
+    padding: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .transport-controls {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 30px;
-    padding: 20px;
-    background: rgba(255,255,255,0.05);
-    border-radius: 12px;
-    flex-wrap: wrap;
+    gap: 25px;
   }
   
   .time-display {
-    font-family: 'Courier New', monospace;
-    font-size: 1.5em;
-    background: #0a0a1a;
+    font-family: 'SF Mono', 'Monaco', monospace;
+    font-size: 1.3em;
+    background: #1a1a1a;
     padding: 10px 20px;
     border-radius: 8px;
   }
   
-  .current-time {
-    color: #667eea;
+  .current {
+    color: #4ecdc4;
   }
   
   .separator {
-    opacity: 0.5;
-    margin: 0 5px;
+    color: #666;
+    margin: 0 8px;
   }
   
-  .total-time {
-    opacity: 0.7;
+  .total {
+    color: #888;
   }
   
-  .playback-controls {
+  .buttons {
     display: flex;
-    gap: 10px;
+    gap: 8px;
   }
   
-  .btn {
-    padding: 10px 15px;
-    background: rgba(255,255,255,0.1);
+  .transport-btn {
+    width: 45px;
+    height: 45px;
     border: none;
-    border-radius: 8px;
-    color: white;
+    border-radius: 50%;
+    background: #404040;
     cursor: pointer;
+    font-size: 1.2em;
     transition: all 0.2s;
   }
   
-  .btn:hover {
-    background: rgba(255,255,255,0.2);
+  .transport-btn:hover {
+    background: #505050;
+    transform: scale(1.05);
   }
   
-  .btn-primary {
-    background: linear-gradient(45deg, #667eea, #764ba2) !important;
+  .transport-btn.main {
+    width: 55px;
+    height: 55px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    font-size: 1.5em;
   }
   
-  .volume-control, .speed-control {
+  .transport-btn.main:hover {
+    transform: scale(1.08);
+  }
+  
+  .transport-btn.active {
+    background: #007acc;
+  }
+  
+  .status {
+    font-size: 0.85em;
+  }
+  
+  .status-playing {
+    color: #4ecdc4;
+  }
+  
+  .status-paused {
+    color: #f5a623;
+  }
+  
+  .status-stopped {
+    color: #666;
+  }
+  
+  .sliders {
+    display: flex;
+    gap: 30px;
+  }
+  
+  .slider-group {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+  }
+  
+  .slider-group label {
+    color: #888;
+    font-size: 0.9em;
   }
   
   input[type="range"] {
-    width: 100px;
+    width: 120px;
     accent-color: #667eea;
   }
   
-  .meter-section {
+  .value {
+    min-width: 45px;
+    font-family: 'SF Mono', 'Monaco', monospace;
+    font-size: 0.9em;
+    color: #667eea;
+  }
+  
+  /* 缩放控制 */
+  .zoom-controls {
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 8px;
   }
   
-  .meters {
-    height: 200px;
+  .zoom-controls button {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 6px;
+    background: #404040;
+    color: #e0e0e0;
+    cursor: pointer;
+    font-size: 1.1em;
+    transition: background 0.2s;
   }
   
-  canvas.meter-canvas {
-    height: 200px;
-    border-radius: 4px;
+  .zoom-controls button:hover {
+    background: #505050;
+  }
+  
+  .zoom-level {
+    font-size: 0.85em;
+    color: #888;
+    min-width: 40px;
+    text-align: center;
+  }
+  
+  /* 效果器 */
+  .effects-rack {
+    background: #2d2d2d;
+    border-radius: 10px;
+    padding: 15px;
+  }
+  
+  .add-effect-btn {
+    padding: 6px 12px;
+    background: #404040;
+    border: none;
+    border-radius: 6px;
+    color: #e0e0e0;
+    cursor: pointer;
+    font-size: 0.85em;
+    transition: background 0.2s;
+  }
+  
+  .add-effect-btn:hover {
+    background: #505050;
   }
   
   .effects-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+    gap: 15px;
+    margin-top: 10px;
   }
   
-  .effect-slot {
-    background: rgba(255,255,255,0.05);
-    padding: 15px;
+  .effect-unit {
+    background: #252525;
     border-radius: 8px;
-    text-align: center;
+    padding: 15px;
+    border: 1px solid #404040;
+  }
+  
+  .effect-unit.disabled {
+    opacity: 0.5;
+  }
+  
+  .effect-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  
+  /* 开关 */
+  .toggle {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+  }
+  
+  .toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  
+  .toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #404040;
+    transition: 0.3s;
+    border-radius: 20px;
+  }
+  
+  .toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+  }
+  
+  .toggle input:checked + .toggle-slider {
+    background-color: #007acc;
+  }
+  
+  .toggle input:checked + .toggle-slider:before {
+    transform: translateX(16px);
+  }
+  
+  /* EQ 控制 */
+  .effect-controls {
+    display: flex;
+    justify-content: space-around;
+    align-items: flex-end;
+    height: 60px;
+  }
+  
+  .eq-band {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-  }
-  
-  .btn-small {
-    padding: 5px 10px;
-    background: rgba(255,255,255,0.1);
-    border: none;
-    border-radius: 4px;
-    color: white;
-    cursor: pointer;
-    font-size: 0.8em;
-  }
-  
-  .zoom-controls {
-    display: flex;
     align-items: center;
     gap: 5px;
   }
   
-  .zoom-controls button {
-    padding: 2px 8px;
-    background: rgba(255,255,255,0.1);
-    border: none;
-    border-radius: 4px;
-    color: white;
-    cursor: pointer;
+  .eq-band span {
+    font-size: 0.7em;
+    color: #888;
+  }
+  
+  .eq-band input[type="range"] {
+    writing-mode: bt-lr;
+    -webkit-appearance: slider-vertical;
+    width: 20px;
+    height: 50px;
+  }
+  
+  .effect-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 60px;
+  }
+  
+  .placeholder {
+    color: #666;
+    font-size: 0.9em;
   }
 </style>
