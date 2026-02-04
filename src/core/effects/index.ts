@@ -116,7 +116,7 @@ export class WAAudioCompressor {
   readonly type = 'compressor';
   
   private readonly context: AudioContext;
-  private readonly node: DynamicsCompressorNode;
+  private readonly _node: DynamicsCompressorNode;
   private readonly inputGain: GainNode;
   private readonly outputGain: GainNode;
   private _enabled = true;
@@ -124,19 +124,19 @@ export class WAAudioCompressor {
   constructor(context: AudioContext) {
     this.context = context;
     
-    this.node = context.createDynamicsCompressor();
-    this.node.threshold.value = -24;
-    this.node.knee.value = 30;
-    this.node.ratio.value = 12;
-    this.node.attack.value = 0.003;
-    this.node.release.value = 0.25;
+    this._node = context.createDynamicsCompressor();
+    this._node.threshold.value = -24;
+    this._node.knee.value = 30;
+    this._node.ratio.value = 12;
+    this._node.attack.value = 0.003;
+    this._node.release.value = 0.25;
     
     this.inputGain = context.createGain();
     this.outputGain = context.createGain();
     this.outputGain.gain.value = 1;
     
-    this.inputGain.connect(this.node);
-    this.node.connect(this.outputGain);
+    this.inputGain.connect(this._node);
+    this._node.connect(this.outputGain);
   }
   
   get input(): AudioNode {
@@ -148,7 +148,7 @@ export class WAAudioCompressor {
   }
   
   get node(): DynamicsCompressorNode {
-    return this.node;
+    return this._node;
   }
   
   get enabled(): boolean {

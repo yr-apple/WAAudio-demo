@@ -51,7 +51,7 @@ export class WAAudioRecorder {
   private _isRecording = false;
   private _isPaused = false;
   private animationId: number | null = null;
-  private onLevelChange: ((level: number) => void) | null = null;
+  private _onLevelChange: ((level: number) => void) | null = null;
   
   // 音频缓冲区（用于 WAV 导出）
   private audioBuffer: Float32Array[] = [];
@@ -103,7 +103,7 @@ export class WAAudioRecorder {
   
   /** 电平变化回调 */
   set onLevelChange(callback: ((level: number) => void) | null) {
-    this.onLevelChange = callback;
+    this._onLevelChange = callback;
   }
   
   // ============================================
@@ -360,8 +360,8 @@ export class WAAudioRecorder {
       
       const level = this.level;
       
-      if (this.onLevelChange) {
-        this.onLevelChange(level);
+      if (this._onLevelChange) {
+        this._onLevelChange(level);
       }
       
       this.animationId = requestAnimationFrame(monitor);
