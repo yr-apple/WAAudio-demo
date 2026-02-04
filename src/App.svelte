@@ -1,134 +1,86 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import WAAudioContext from './core';
-
-  let waCtx: WAAudioContext;
-  let analyser: AnalyserNode | null = null;
-  let canvas: HTMLCanvasElement;
-  let ctx: CanvasRenderingContext2D | null = null;
-  let isPlaying = false;
-  let selectedFile: File | null = null;
-  let source: any = null;
-
-  onMount(() => {
-    waCtx = new WAAudioContext();
-    analyser = waCtx.createAnalyser();
-    analyser.fftSize = 2048;
-    
-    ctx = canvas.getContext('2d');
-    draw();
-  });
-
-  function handleFileSelect(e: Event) {
-    const target = e.target as HTMLInputElement;
-    if (target.files && target.files[0]) {
-      selectedFile = target.files[0];
-    }
-  }
-
-  async function play() {
-    if (!selectedFile) return;
-    
-    if (isPlaying) {
-      source?.stop();
-      isPlaying = false;
-      return;
-    }
-
-    source = await waCtx.createSource(selectedFile);
-    source.connect(analyser!);
-    analyser!.connect(waCtx.getContext().destination);
-    source.play();
-    isPlaying = true;
-  }
-
-  function draw() {
-    if (!ctx || !analyser) return;
-    
-    requestAnimationFrame(draw);
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    analyser.getByteFrequencyData(dataArray);
-    
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    const barWidth = (canvas.width / bufferLength) * 2.5;
-    let x = 0;
-    
-    for (let i = 0; i < bufferLength; i++) {
-      const barHeight = (dataArray[i] / 255) * canvas.height;
-      
-      const gradient = ctx.createLinearGradient(0, canvas.height - barHeight, 0, canvas.height);
-      gradient.addColorStop(0, '#667eea');
-      gradient.addColorStop(1, '#764ba2');
-      
-      ctx.fillStyle = gradient;
-      ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
-      
-      x += barWidth + 1;
-    }
+  import AudioWorkstation from './demos/workstation/AudioWorkstation.svelte';
+  import SpectrumVisualizer from './demos/analyser/SpectrumVisualizer.svelte';
+  
+  let currentDemo = 'workstation';
+  
+  function setDemo(demo: string) {
+    currentDemo = demo;
   }
 </script>
 
 <main>
-  <h1>🎵 WAAudio Demo</h1>
+  <nav class="nav">
+    <div class="nav-brand">🎵 WAAudio</div>
+    <div class="nav-links">
+      <button class:active={currentDemo === 'workstation'} on:click={() => setDemo('workstation')}>
+        🎚️ 音频工作站
+      </button>
+      <button class:active={currentDemo === 'visualizer'} on:click={() => setDemo('visualizer')}>
+        📊 频谱可视化
+      </button>
+    </div>
+  </nav>
   
-  <div class="controls">
-    <input type="file" accept="audio/*" on:change={handleFileSelect} />
-    <button on:click={play}>
-      {isPlaying ? '⏹️ 停止' : '▶️ 播放'}
-    </button>
-  </div>
-  
-  <canvas bind:this={canvas} width="800" height="400"></canvas>
-  
-  <p class="info">
-    选择一个音频文件，点击播放查看频谱可视化效果
-  </p>
+  {#if currentDemo === 'workstation'}
+    <AudioWorkstation />
+  {:else if currentDemo === 'visualizer'}
+    <SpectrumVisualizer />
+  {/if}
 </main>
 
 <style>
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  
   main {
-    padding: 20px;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     min-height: 100vh;
-    color: white;
-    text-align: center;
+    background: #1a1a2e;
   }
   
-  h1 {
-    margin-bottom: 20px;
+  .nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 30px;
+    background: rgba(0,0,0,0.3);
+    border-bottom: 1px solid rgba(255,255,255,0.1);
   }
   
-  .controls {
-    margin: 20px 0;
-  }
-  
-  input[type="file"] {
-    padding: 10px;
-    background: rgba(255,255,255,0.1);
-    border-radius: 8px;
-    margin-right: 10px;
-  }
-  
-  button {
-    padding: 10px 20px;
+  .nav-brand {
+    font-size: 1.3em;
+    font-weight: bold;
     background: linear-gradient(45deg, #667eea, #764ba2);
-    border: none;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  
+  .nav-links {
+    display: flex;
+    gap: 10px;
+  }
+  
+  .nav-links button {
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
     border-radius: 8px;
     color: white;
     cursor: pointer;
+    transition: all 0.2s;
   }
   
-  canvas {
-    border-radius: 16px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  .nav-links button:hover {
+    background: rgba(255,255,255,0.1);
   }
   
-  .info {
-    margin-top: 20px;
-    opacity: 0.7;
+  .nav-links button.active {
+    background: linear-gradient(45deg, #667eea, #764ba2);
+    border: none;
   }
 </style>
