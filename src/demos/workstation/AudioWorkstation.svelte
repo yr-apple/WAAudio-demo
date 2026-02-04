@@ -1,15 +1,20 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import WAAudioContext from '@core/index';
+  import { WAAudioEQ, WAAudioCompressor, WAAudioReverb, WAAudioDelay, WAAudioDistortion } from '@core/index';
   
-  // 状态
+  // ============================================
+  // 状态定义
+  // ============================================
+  
+  // 核心状态
   let context: WAAudioContext;
   let audioContext: AudioContext;
   let analyser: AnalyserNode | null = null;
   let source: AudioBufferSourceNode | null = null;
   let audioBuffer: AudioBuffer | null = null;
   
-  // UI 状态
+  // 播放状态
   let isPlaying = false;
   let isPaused = false;
   let currentTime = 0;
@@ -17,15 +22,15 @@
   let volume = 1;
   let playbackRate = 1;
   let zoom = 1;
+  let isLooping = false;
   let loopStart = 0;
   let loopEnd = 0;
-  let isLooping = false;
   
-  // 文件
+  // 文件状态
   let selectedFile: File | null = null;
   let fileName = '';
   
-  // Canvas
+  // Canvas 引用
   let waveformCanvas: HTMLCanvasElement;
   let spectrumCanvas: HTMLCanvasElement;
   let waveformCtx: CanvasRenderingContext2D;
@@ -36,38 +41,77 @@
   let startTime = 0;
   let pauseOffset = 0;
   
-  // 颜色主题
-  const theme = {
-    bg: '#1e1e1e',
-    panel: '#2d2d2d',
-    accent: '#007acc',
-    accentHover: '#005a9e',
-    waveform: '#4ecdc4',
-    waveformBg: '#1a1a2e',
-    spectrum: '#667eea',
-    text: '#e0e0e0',
-    textMuted: '#888888',
-    border: '#404040'
-  };
+  // 效果器实例
+  let eq: WAAudioEQ | null = null;
+  let compressor: WAAudioCompressor | null = null;
+  let reverb: WAAudioReverb | null = null;
+  let delay: WAAudioDelay | null = null;
+  let distortion: WAAudioDistortion | null = null;
+  
+  // 效果器启用状态
+  let eqEnabled = false;
+  let compressorEnabled = false;
+  let reverbEnabled = false;
+  let delayEnabled = false;
+  let distortionEnabled = false;
+  
+  // 效果器参数
+  let eqLow = 0;
+  let eqMid = 0;
+  let eqHigh = 0;
+  let compThreshold = -24;
+  let compRatio = 12;
+  let reverbMix = 0.3;
+  let reverbSize = 0.5;
+  let delayTime = 0.3;
+  let delayFeedback = 0.4;
+  let distortionAmount = 50;
+  
+  // 快捷键
+  const shortcuts: Map<string, () => void> = new Map();
+  
+  // ============================================
+  // 生命周期
+  // ============================================
   
   onMount(() => {
     context = new WAAudioContext();
-    audioContext = context.getContext();
+    audioContext = context.context;
     
-    waveformCtx = waveformCanvas.getContext('2d')!;
-    spectrumCtx = spectrumCanvas.getContext('2d')!;
-    
-    // 初始化频谱
+    // 初始化分析器
     analyser = audioContext.createAnalyser();
     analyser.fftSize = 2048;
     analyser.connect(audioContext.destination);
+    
+    // 初始化效果器
+    eq = context.createEQ();
+    compressor = context.createCompressor();
+    reverb = context.createReverb();
+    delay = context.createDelay();
+    distortion = context.createDistortion();
+    
+    // Canvas 初始化
+    waveformCtx = waveformCanvas.getContext('2d')!;
+    spectrumCtx = spectrumCanvas.getContext('2d')!;
+    
+    // 注册快捷键
+    _registerShortcuts();
+    window.addEventListener('keydown', _handleKeydown);
+    
+    // 初始绘制
+    draw();
   });
   
   onDestroy(() => {
     if (animationId) cancelAnimationFrame(animationId);
     if (source) source.stop();
     context.suspend();
+    window.removeEventListener('keydown', _handleKeydown);
   });
+  
+  // ============================================
+  // 文件操作
+  // ============================================
   
   function handleFileSelect(e: Event) {
     const target = e.target as HTMLInputElement;
@@ -88,6 +132,10 @@
     drawWaveform();
   }
   
+  // ============================================
+  // 播放控制
+  // ============================================
+  
   function play() {
     if (!audioBuffer) return;
     
@@ -96,36 +144,12 @@
       return;
     }
     
-    source = audioContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.playbackRate.value = playbackRate;
-    
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = volume;
-    
-    source.connect(gainNode);
-    gainNode.connect(analyser!);
-    
-    const startOffset = pauseOffset;
-    source.start(0, startOffset);
-    startTime = audioContext.currentTime - startOffset / playbackRate;
-    
+    _createSource();
     isPlaying = true;
     isPaused = false;
+    startTime = audioContext.currentTime - pauseOffset / playbackRate;
     
     animate();
-    
-    source.onended = () => {
-      if (isLooping) {
-        pauseOffset = loopStart;
-        play();
-      } else if (playbackRate > 1) {
-        pauseOffset = 0;
-        play();
-      } else {
-        stop();
-      }
-    };
   }
   
   function pause() {
@@ -149,6 +173,10 @@
     pauseOffset = 0;
   }
   
+  function toggleLoop() {
+    isLooping = !isLooping;
+  }
+  
   function seek(e: MouseEvent) {
     if (!audioBuffer) return;
     const rect = (e.target as HTMLElement).getBoundingClientRect();
@@ -159,9 +187,80 @@
     
     if (isPlaying) {
       source?.stop();
-      play();
+      _createSource();
     }
   }
+  
+  function skipBackward() {
+    currentTime = Math.max(0, currentTime - 10);
+    pauseOffset = currentTime;
+    if (isPlaying) {
+      source?.stop();
+      _createSource();
+    }
+  }
+  
+  function skipForward() {
+    currentTime = Math.min(duration, currentTime + 10);
+    pauseOffset = currentTime;
+    if (isPlaying) {
+      source?.stop();
+      _createSource();
+    }
+  }
+  
+  function _createSource() {
+    source = audioContext.createBufferSource();
+    source.buffer = audioBuffer;
+    source.playbackRate.value = playbackRate;
+    
+    // 连接效果器链
+    let lastNode: AudioNode = source;
+    
+    // 效果器链: Source -> EQ -> Compressor -> Reverb -> Delay -> Distortion -> Analyser -> Destination
+    if (eqEnabled && eq) {
+      lastNode.connect(eq.input);
+      lastNode = eq.output;
+    }
+    
+    if (compressorEnabled && compressor) {
+      lastNode.connect(compressor.input);
+      lastNode = compressor.output;
+    }
+    
+    if (reverbEnabled && reverb) {
+      lastNode.connect(reverb.input);
+      lastNode = reverb.output;
+    }
+    
+    if (delayEnabled && delay) {
+      lastNode.connect(delay.input);
+      lastNode = delay.output;
+    }
+    
+    if (distortionEnabled && distortion) {
+      lastNode.connect(distortion.input);
+      lastNode = distortion.output;
+    }
+    
+    // 连接到分析器和输出
+    lastNode.connect(analyser!);
+    
+    source.start(0, currentTime);
+    
+    source.onended = () => {
+      if (isLooping) {
+        pauseOffset = loopStart;
+        play();
+      } else {
+        stop();
+      }
+    };
+  }
+  
+  // ============================================
+  // 动画循环
+  // ============================================
   
   function animate() {
     if (!isPlaying) return;
@@ -182,6 +281,15 @@
     animationId = requestAnimationFrame(animate);
   }
   
+  // ============================================
+  // 绘图
+  // ============================================
+  
+  function draw() {
+    drawWaveform();
+    drawSpectrum();
+  }
+  
   function drawWaveform() {
     if (!waveformCtx || !audioBuffer) return;
     
@@ -189,7 +297,7 @@
     const height = waveformCanvas.height;
     
     // 背景
-    waveformCtx.fillStyle = theme.waveformBg;
+    waveformCtx.fillStyle = '#1a1a2e';
     waveformCtx.fillRect(0, 0, width, height);
     
     if (!audioBuffer) return;
@@ -200,28 +308,16 @@
     const amp = height / 2 * 0.9;
     const centerY = height / 2;
     
-    // 绘制波形
-    waveformCtx.strokeStyle = theme.waveform;
-    waveformCtx.lineWidth = 1.5;
-    waveformCtx.beginPath();
+    // 波形
+    waveformCtx.fillStyle = '#4ecdc4';
     
     for (let i = 0; i < width; i++) {
       const dataIndex = Math.floor(i * step);
       if (dataIndex >= data.length) break;
       
       const amplitude = data[dataIndex] * amp;
-      waveformCtx.moveTo(i, centerY - amplitude);
-      waveformCtx.lineTo(i, centerY + amplitude);
+      waveformCtx.fillRect(i, centerY - amplitude, 1, amplitude * 2);
     }
-    waveformCtx.stroke();
-    
-    // 中心线
-    waveformCtx.strokeStyle = 'rgba(255,255,255,0.1)';
-    waveformCtx.lineWidth = 1;
-    waveformCtx.beginPath();
-    waveformCtx.moveTo(0, centerY);
-    waveformCtx.lineTo(width, centerY);
-    waveformCtx.stroke();
     
     // 播放头
     const playheadX = (currentTime / duration) * width;
@@ -232,12 +328,12 @@
     waveformCtx.lineTo(playheadX, height);
     waveformCtx.stroke();
     
-    // 循环区域高亮
+    // 循环区域
     if (isLooping) {
-      const loopStartX = (loopStart / duration) * width;
-      const loopEndX = (loopEnd / duration) * width;
+      const startX = (loopStart / duration) * width;
+      const endX = (loopEnd / duration) * width;
       waveformCtx.fillStyle = 'rgba(255, 107, 107, 0.2)';
-      waveformCtx.fillRect(loopStartX, 0, loopEndX - loopStartX, height);
+      waveformCtx.fillRect(startX, 0, endX - startX, height);
     }
   }
   
@@ -247,7 +343,7 @@
     const width = spectrumCanvas.width;
     const height = spectrumCanvas.height;
     
-    spectrumCtx.fillStyle = theme.waveformBg;
+    spectrumCtx.fillStyle = '#1a1a2e';
     spectrumCtx.fillRect(0, 0, width, height);
     
     const dataArray = new Uint8Array(analyser.frequencyBinCount);
@@ -271,6 +367,54 @@
     }
   }
   
+  // ============================================
+  // 效果器控制
+  // ============================================
+  
+  function updateEQ() {
+    if (!eq) return;
+    eq.setLow(eqLow).setMid(eqMid).setHigh(eqHigh);
+  }
+  
+  function updateCompressor() {
+    if (!compressor) return;
+    compressor.setThreshold(compThreshold).setRatio(compRatio);
+  }
+  
+  function updateReverb() {
+    if (!reverb) return;
+    reverb.setRoomSize(reverbSize).setMix(reverbMix);
+  }
+  
+  function updateDelay() {
+    if (!delay) return;
+    delay.setTime(delayTime).setFeedback(delayFeedback);
+  }
+  
+  function updateDistortion() {
+    if (!distortion) return;
+    distortion.setAmount(distortionAmount);
+  }
+  
+  function applyEQPreset(preset: 'bass' | 'vocal' | 'bright') {
+    switch (preset) {
+      case 'bass':
+        eqLow = 6; eqMid = -2; eqHigh = -2;
+        break;
+      case 'vocal':
+        eqLow = -2; eqMid = 4; eqHigh = 2;
+        break;
+      case 'bright':
+        eqLow = -3; eqMid = 0; eqHigh = 6;
+        break;
+    }
+    updateEQ();
+  }
+  
+  // ============================================
+  // 工具函数
+  // ============================================
+  
   function formatTime(seconds: number): string {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -278,33 +422,23 @@
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
   }
   
-  function setVolume(e: Event) {
-    volume = parseFloat((e.target as HTMLInputElement).value);
+  // ============================================
+  // 快捷键
+  // ============================================
+  
+  function _registerShortcuts() {
+    shortcuts.set(' ', () => play());
+    shortcuts.set('Escape', () => stop());
+    shortcuts.set('l', () => toggleLoop());
+    shortcuts.set('ArrowLeft', () => skipBackward());
+    shortcuts.set('ArrowRight', () => skipForward());
   }
   
-  function setPlaybackRate(e: Event) {
-    playbackRate = parseFloat((e.target as HTMLInputElement).value);
-  }
-  
-  function toggleLoop() {
-    isLooping = !isLooping;
-  }
-  
-  function skipBackward() {
-    currentTime = Math.max(0, currentTime - 10);
-    pauseOffset = currentTime;
-    if (isPlaying) {
-      source?.stop();
-      play();
-    }
-  }
-  
-  function skipForward() {
-    currentTime = Math.min(duration, currentTime + 10);
-    pauseOffset = currentTime;
-    if (isPlaying) {
-      source?.stop();
-      play();
+  function _handleKeydown(e: KeyboardEvent) {
+    const handler = shortcuts.get(e.key);
+    if (handler && !(e.target as HTMLElement).matches('input')) {
+      e.preventDefault();
+      handler();
     }
   }
 </script>
@@ -331,9 +465,7 @@
     </div>
     
     <div class="toolbar-right">
-      <button class="tool-btn" title="导入">📥</button>
-      <button class="tool-btn" title="导出">📤</button>
-      <button class="tool-btn" title="设置">⚙️</button>
+      <span class="shortcut-hint">空格: 播放 | ←→: 快进 | L: 循环</span>
     </div>
   </header>
   
@@ -369,7 +501,6 @@
     
     <!-- 控制台 -->
     <div class="console-panel">
-      <!-- 播放控制 -->
       <div class="transport-controls">
         <div class="time-display">
           <span class="current">{formatTime(currentTime)}</span>
@@ -378,21 +509,13 @@
         </div>
         
         <div class="buttons">
-          <button class="transport-btn" on:click={skipBackward} title="后退10秒">
-            ⏪
-          </button>
+          <button class="transport-btn" on:click={skipBackward} title="后退10秒">⏪</button>
           <button class="transport-btn main" on:click={play}>
             {isPlaying ? '⏸️' : '▶️'}
           </button>
-          <button class="transport-btn" on:click={stop} title="停止">
-            ⏹️
-          </button>
-          <button class="transport-btn" on:click={skipForward} title="前进10秒">
-            ⏩
-          </button>
-          <button class="transport-btn loop" class:active={isLooping} on:click={toggleLoop} title="循环">
-            🔁
-          </button>
+          <button class="transport-btn" on:click={stop} title="停止">⏹️</button>
+          <button class="transport-btn" on:click={skipForward} title="前进10秒">⏩</button>
+          <button class="transport-btn" class:active={isLooping} on:click={toggleLoop} title="循环">🔁</button>
         </div>
         
         <div class="status">
@@ -409,85 +532,142 @@
       <!-- 音量/速度 -->
       <div class="sliders">
         <div class="slider-group">
-          <label>🔊 音量</label>
-          <input type="range" min="0" max="1" step="0.01" {volume} on:input={setVolume} />
+          <label>🔊</label>
+          <input type="range" min="0" max="1" step="0.01" bind:value={volume} />
           <span class="value">{Math.round(volume * 100)}%</span>
         </div>
         <div class="slider-group">
-          <label>🚀 速度</label>
-          <input type="range" min="0.25" max="2" step="0.25" {playbackRate} on:input={setPlaybackRate} />
+          <label>🚀</label>
+          <input type="range" min="0.25" max="2" step="0.25" bind:value={playbackRate} />
           <span class="value">{playbackRate}x</span>
         </div>
       </div>
     </div>
     
-    <!-- 效果器插槽 -->
+    <!-- 效果器机架 -->
     <div class="effects-rack">
       <div class="panel-header">
         <span>效果器</span>
-        <button class="add-effect-btn">+ 添加效果</button>
       </div>
+      
       <div class="effects-grid">
-        <div class="effect-unit">
+        <!-- EQ -->
+        <div class="effect-unit" class:disabled={!eqEnabled}>
           <div class="effect-header">
             <span>🎚️ 均衡器</span>
             <label class="toggle">
-              <input type="checkbox" />
+              <input type="checkbox" bind:checked={eqEnabled} />
               <span class="toggle-slider"></span>
             </label>
           </div>
           <div class="effect-controls">
             <div class="eq-band">
               <span>低</span>
-              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+              <input type="range" min="-12" max="12" bind:value={eqLow} on:input={updateEQ} orient="vertical" />
+              <span class="db">{eqLow}dB</span>
             </div>
             <div class="eq-band">
               <span>中</span>
-              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+              <input type="range" min="-12" max="12" bind:value={eqMid} on:input={updateEQ} orient="vertical" />
+              <span class="db">{eqMid}dB</span>
             </div>
             <div class="eq-band">
               <span>高</span>
-              <input type="range" min="-12" max="12" value="0" orient="vertical" />
+              <input type="range" min="-12" max="12" bind:value={eqHigh} on:input={updateEQ} orient="vertical" />
+              <span class="db">{eqHigh}dB</span>
+            </div>
+          </div>
+          <div class="preset-buttons">
+            <button on:click={() => applyEQPreset('bass')}>低音</button>
+            <button on:click={() => applyEQPreset('vocal')}>人声</button>
+            <button on:click={() => applyEQPreset('bright')}>明亮</button>
+          </div>
+        </div>
+        
+        <!-- Compressor -->
+        <div class="effect-unit" class:disabled={!compressorEnabled}>
+          <div class="effect-header">
+            <span>🔊 压缩器</span>
+            <label class="toggle">
+              <input type="checkbox" bind:checked={compressorEnabled} />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-controls compact">
+            <div class="param-row">
+              <span>阈值</span>
+              <input type="range" min="-60" max="0" bind:value={compThreshold} on:input={updateCompressor} />
+              <span class="db">{compThreshold}dB</span>
+            </div>
+            <div class="param-row">
+              <span>比率</span>
+              <input type="range" min="1" max="20" bind:value={compRatio} on:input={updateCompressor} />
+              <span class="db">{compRatio}:1</span>
             </div>
           </div>
         </div>
         
-        <div class="effect-unit disabled">
-          <div class="effect-header">
-            <span>🔊 压缩器</span>
-            <label class="toggle">
-              <input type="checkbox" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-          <div class="effect-content">
-            <span class="placeholder">未加载</span>
-          </div>
-        </div>
-        
-        <div class="effect-unit disabled">
+        <!-- Reverb -->
+        <div class="effect-unit" class:disabled={!reverbEnabled}>
           <div class="effect-header">
             <span>🌊 混响</span>
             <label class="toggle">
-              <input type="checkbox" />
+              <input type="checkbox" bind:checked={reverbEnabled} />
               <span class="toggle-slider"></span>
             </label>
           </div>
-          <div class="effect-content">
-            <span class="placeholder">未加载</span>
+          <div class="effect-controls compact">
+            <div class="param-row">
+              <span>大小</span>
+              <input type="range" min="0" max="1" step="0.1" bind:value={reverbSize} on:input={updateReverb} />
+              <span class="db">{Math.round(reverbSize * 100)}%</span>
+            </div>
+            <div class="param-row">
+              <span>混合</span>
+              <input type="range" min="0" max="1" step="0.05" bind:value={reverbMix} on:input={updateReverb} />
+              <span class="db">{Math.round(reverbMix * 100)}%</span>
+            </div>
           </div>
         </div>
         
-        <div class="effect-unit disabled">
+        <!-- Delay -->
+        <div class="effect-unit" class:disabled={!delayEnabled}>
           <div class="effect-header">
             <span>⏱️ 延迟</span>
             <label class="toggle">
-              <input type="checkbox" />
+              <input type="checkbox" bind:checked={delayEnabled} />
               <span class="toggle-slider"></span>
             </label>
           </div>
-          <div class="effect-content">
-            <span class="placeholder">未加载</span>
+          <div class="effect-controls compact">
+            <div class="param-row">
+              <span>时间</span>
+              <input type="range" min="0" max="1" step="0.05" bind:value={delayTime} on:input={updateDelay} />
+              <span class="db">{Math.round(delayTime * 1000)}ms</span>
+            </div>
+            <div class="param-row">
+              <span>反馈</span>
+              <input type="range" min="0" max="0.9" step="0.05" bind:value={delayFeedback} on:input={updateDelay} />
+              <span class="db">{Math.round(delayFeedback * 100)}%</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Distortion -->
+        <div class="effect-unit" class:disabled={!distortionEnabled}>
+          <div class="effect-header">
+            <span>⚡ 失真</span>
+            <label class="toggle">
+              <input type="checkbox" bind:checked={distortionEnabled} />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="effect-controls compact">
+            <div class="param-row single">
+              <span>失真量</span>
+              <input type="range" min="0" max="100" bind:value={distortionAmount} on:input={updateDistortion} />
+              <span class="db">{distortionAmount}%</span>
+            </div>
           </div>
         </div>
       </div>
@@ -503,7 +683,6 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
   
-  /* 工具栏 */
   .toolbar {
     display: flex;
     justify-content: space-between;
@@ -519,10 +698,6 @@
     gap: 8px;
   }
   
-  .logo-icon {
-    font-size: 1.5em;
-  }
-  
   .logo-text {
     font-size: 1.2em;
     font-weight: bold;
@@ -536,7 +711,6 @@
     padding: 2px 6px;
     background: #404040;
     border-radius: 4px;
-    margin-left: 5px;
   }
   
   .file-info {
@@ -551,7 +725,6 @@
     border-radius: 6px;
     cursor: pointer;
     font-size: 0.9em;
-    transition: background 0.2s;
   }
   
   .file-btn:hover {
@@ -567,21 +740,11 @@
     font-size: 0.9em;
   }
   
-  .tool-btn {
-    padding: 8px 12px;
-    background: transparent;
-    border: 1px solid #404040;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 1em;
-    transition: all 0.2s;
+  .shortcut-hint {
+    font-size: 0.8em;
+    color: #666;
   }
   
-  .tool-btn:hover {
-    background: #404040;
-  }
-  
-  /* 工作区 */
   .workspace {
     padding: 20px;
     display: flex;
@@ -598,7 +761,6 @@
     color: #e0e0e0;
   }
   
-  /* 波形面板 */
   .waveform-panel, .spectrum-panel {
     background: #2d2d2d;
     border-radius: 10px;
@@ -630,11 +792,6 @@
     color: #888;
   }
   
-  .ruler-center {
-    opacity: 0.5;
-  }
-  
-  /* 控制台 */
   .console-panel {
     background: #2d2d2d;
     border-radius: 10px;
@@ -658,18 +815,9 @@
     border-radius: 8px;
   }
   
-  .current {
-    color: #4ecdc4;
-  }
-  
-  .separator {
-    color: #666;
-    margin: 0 8px;
-  }
-  
-  .total {
-    color: #888;
-  }
+  .current { color: #4ecdc4; }
+  .separator { color: #666; margin: 0 8px; }
+  .total { color: #888; }
   
   .buttons {
     display: flex;
@@ -684,7 +832,6 @@
     background: #404040;
     cursor: pointer;
     font-size: 1.2em;
-    transition: all 0.2s;
   }
   
   .transport-btn:hover {
@@ -699,10 +846,6 @@
     font-size: 1.5em;
   }
   
-  .transport-btn.main:hover {
-    transform: scale(1.08);
-  }
-  
   .transport-btn.active {
     background: #007acc;
   }
@@ -711,17 +854,9 @@
     font-size: 0.85em;
   }
   
-  .status-playing {
-    color: #4ecdc4;
-  }
-  
-  .status-paused {
-    color: #f5a623;
-  }
-  
-  .status-stopped {
-    color: #666;
-  }
+  .status-playing { color: #4ecdc4; }
+  .status-paused { color: #f5a623; }
+  .status-stopped { color: #666; }
   
   .sliders {
     display: flex;
@@ -751,7 +886,6 @@
     color: #667eea;
   }
   
-  /* 缩放控制 */
   .zoom-controls {
     display: flex;
     align-items: center;
@@ -766,12 +900,6 @@
     background: #404040;
     color: #e0e0e0;
     cursor: pointer;
-    font-size: 1.1em;
-    transition: background 0.2s;
-  }
-  
-  .zoom-controls button:hover {
-    background: #505050;
   }
   
   .zoom-level {
@@ -781,31 +909,15 @@
     text-align: center;
   }
   
-  /* 效果器 */
   .effects-rack {
     background: #2d2d2d;
     border-radius: 10px;
     padding: 15px;
   }
   
-  .add-effect-btn {
-    padding: 6px 12px;
-    background: #404040;
-    border: none;
-    border-radius: 6px;
-    color: #e0e0e0;
-    cursor: pointer;
-    font-size: 0.85em;
-    transition: background 0.2s;
-  }
-  
-  .add-effect-btn:hover {
-    background: #505050;
-  }
-  
   .effects-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 15px;
     margin-top: 10px;
   }
@@ -828,7 +940,6 @@
     margin-bottom: 12px;
   }
   
-  /* 开关 */
   .toggle {
     position: relative;
     display: inline-block;
@@ -874,12 +985,18 @@
     transform: translateX(16px);
   }
   
-  /* EQ 控制 */
   .effect-controls {
     display: flex;
     justify-content: space-around;
     align-items: flex-end;
-    height: 60px;
+    height: 80px;
+  }
+  
+  .effect-controls.compact {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    height: auto;
   }
   
   .eq-band {
@@ -894,6 +1011,11 @@
     color: #888;
   }
   
+  .eq-band .db {
+    font-size: 0.65em;
+    color: #667eea;
+  }
+  
   .eq-band input[type="range"] {
     writing-mode: bt-lr;
     -webkit-appearance: slider-vertical;
@@ -901,15 +1023,48 @@
     height: 50px;
   }
   
-  .effect-content {
+  .param-row {
     display: flex;
     align-items: center;
-    justify-content: center;
-    height: 60px;
+    gap: 8px;
+    font-size: 0.8em;
   }
   
-  .placeholder {
-    color: #666;
-    font-size: 0.9em;
+  .param-row span:first-child {
+    width: 40px;
+    color: #888;
+  }
+  
+  .param-row input[type="range"] {
+    flex: 1;
+    width: auto;
+  }
+  
+  .param-row .db {
+    width: 50px;
+    text-align: right;
+    color: #667eea;
+    font-size: 0.85em;
+  }
+  
+  .preset-buttons {
+    display: flex;
+    gap: 5px;
+    margin-top: 10px;
+  }
+  
+  .preset-buttons button {
+    flex: 1;
+    padding: 4px;
+    font-size: 0.7em;
+    background: #404040;
+    border: none;
+    border-radius: 4px;
+    color: #e0e0e0;
+    cursor: pointer;
+  }
+  
+  .preset-buttons button:hover {
+    background: #505050;
   }
 </style>
