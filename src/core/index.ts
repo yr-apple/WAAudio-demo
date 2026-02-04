@@ -10,9 +10,9 @@
 import { WAAudioSource } from './source/file-source';
 import { WAAudioOscillator } from './source/oscillator';
 import { WAAudioAnalyser } from './analyser';
-import { WAAudioEffects } from './effects';
+import { WAAudioEQ, WAAudioCompressor, WAAudioReverb, WAAudioDelay, WAAudioDistortion, WAAudioEffectFactory, WAAudioEffectChain } from './effects';
 import { WAAudioRecorder } from './recorder';
-import { WAAudioMixer } from './engine/mixer';
+import { WAAudioMixer, WAAudioTrack } from './engine/mixer';
 
 // ============================================
 // 类型定义
@@ -21,20 +21,14 @@ import { WAAudioMixer } from './engine/mixer';
 export type OscillatorType = 'sine' | 'square' | 'sawtooth' | 'triangle';
 
 export interface WAAudioConfig {
-  /** 采样率 */
   sampleRate?: number;
-  /** 缓冲区大小 */
   bufferSize?: number;
-  /** 自动连接主输出 */
   autoConnect?: boolean;
 }
 
 export interface PlayOptions {
-  /** 起始位置（秒） */
   offset?: number;
-  /** 循环播放 */
   loop?: boolean;
-  /** 播放速率 */
   playbackRate?: number;
 }
 
@@ -44,48 +38,17 @@ export interface PlayOptions {
 
 /**
  * WAAudio 主上下文
- * 
- * 使用示例：
- * ```typescript
- * const wa = new WAAudioContext();
- * const source = await wa.createSource(file);
- * source.connect(wa.master);
- * source.play();
- * ```
  */
 export class WAAudioContext {
-  /** 原生 AudioContext */
   private _context: AudioContext;
-  
-  /** 主增益节点 */
   private _masterGain: GainNode;
-  
-  /** 主压缩器 */
   private _compressor: DynamicsCompressorNode;
-  
-  /** 效果器实例 */
-  private _effects: WAAudioEffects;
-  
-  /** 混音器实例 */
-  private _mixer: WAAudioMixer;
-  
-  /** 初始化状态 */
-  private _initialized = false;
   
   constructor(config: WAAudioConfig = {}) {
     const sampleRate = config.sampleRate || 44100;
-    const bufferSize = config.bufferSize || 256;
+    const AudioContextClass = (window as { AudioContext?: new() => AudioContext }).AudioContext;
+    this._context = new AudioContextClass?.() || new (window.AudioContext || (window as { webkitAudioContext: new() => AudioContext }).webkitAudioContext)({ sampleRate });
     
-    // 创建 AudioContext（兼容不同浏览器）
-    const AudioContextClass = (window as unknown as { AudioContext?: new() => AudioContext }).AudioContext;
-    this._context = new AudioContextClass?.() || new (window.AudioContext || (window as unknown as { webkitAudioContext: new() => AudioContext }).webkitAudioContext)({ sampleRate });
-    
-    // 设置缓冲区大小
-    if ('audioWorklet' in this._context) {
-      this._context.audioWorklet.addModule('processor.js').catch(() => {});
-    }
-    
-    // 创建信号链路: Source -> Effects -> Compressor -> MasterGain -> Destination
     this._compressor = this._context.createDynamicsCompressor();
     this._compressor.threshold.value = -24;
     this._compressor.knee.value = 30;
@@ -98,187 +61,103 @@ export class WAAudioContext {
     
     this._compressor.connect(this._masterGain);
     this._masterGain.connect(this._context.destination);
-    
-    // 初始化效果器和混音器
-    this._effects = new WAAudioEffects(this._context);
-    this._mixer = new WAAudioMixer(this._context);
-    
-    this._initialized = true;
   }
   
-  // ============================================
-  // 属性访问器
-  // ============================================
-  
-  /** 获取原生 AudioContext */
   get context(): AudioContext {
     return this._context;
   }
   
-  /** 获取主增益节点 */
   get masterGain(): GainNode {
     return this._masterGain;
   }
   
-  /** 获取主压缩器 */
-  get compressor(): DynamicsCompressorNode {
-    return this._compressor;
-  }
-  
-  /** 获取效果器实例 */
-  get effects(): WAAudioEffects {
-    return this._effects;
-  }
-  
-  /** 获取混音器实例 */
-  get mixer(): WAAudioMixer {
-    return this._mixer;
-  }
-  
-  /** 获取当前时间 */
   get currentTime(): number {
     return this._context.currentTime;
   }
   
-  /** 获取采样率 */
   get sampleRate(): number {
     return this._context.sampleRate;
   }
   
-  /** 获取状态 */
-  get state(): AudioContextState {
-    return this._context.state;
-  }
-  
-  // ============================================
-  // 音频源操作
-  // ============================================
-  
-  /**
-   * 创建文件音频源
-   * 
-   * @param file - 音频文件 (WAV, MP3, OGG, etc.)
-   * @returns Promise<WAAudioSource>
-   */
+  // 音频源
   async createSource(file: File): Promise<WAAudioSource> {
     const arrayBuffer = await file.arrayBuffer();
     const audioBuffer = await this._context.decodeAudioData(arrayBuffer);
     return new WAAudioSource(this._context, audioBuffer, this._masterGain);
   }
   
-  /**
-   * 创建振荡器
-   * 
-   * @param type - 波形类型
-   * @param frequency - 频率 (Hz)
-   */
   createOscillator(type: OscillatorType = 'sine', frequency: number = 440): WAAudioOscillator {
     return new WAAudioOscillator(this._context, this._masterGain, type, frequency);
   }
   
-  /**
-   * 创建麦克风源
-   */
   async createMicrophoneSource(): Promise<MediaStreamAudioSourceNode> {
-    const stream = await navigator.mediaDevices.getUserMedia({ 
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
-    });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     return this._context.createMediaStreamSource(stream);
   }
   
-  // ============================================
-  // 效果器创建
-  // ============================================
-  
-  /** 创建均衡器 */
-  createEQ(): ReturnType<WAAudioEffects['createEQ']> {
-    return this._effects.createEQ();
+  // 效果器
+  createEQ(): WAAudioEQ {
+    return new WAAudioEQ(this._context);
   }
   
-  /** 创建压缩器 */
-  createCompressor(): ReturnType<WAAudioEffects['createCompressor']> {
-    return this._effects.createCompressor();
+  createCompressor(): WAAudioCompressor {
+    return new WAAudioCompressor(this._context);
   }
   
-  /** 创建混响 */
-  createReverb(duration: number = 2, decay: number = 2): ReturnType<WAAudioEffects['createReverb']> {
-    return this._effects.createReverb(duration, decay);
+  createReverb(duration: number = 2, decay: number = 2): WAAudioReverb {
+    const reverb = new WAAudioReverb(this._context);
+    reverb.setRoomSize(duration / 4);
+    return reverb;
   }
   
-  /** 创建延迟 */
-  createDelay(time: number = 0.3, feedback: number = 0.4): ReturnType<WAAudioEffects['createDelay']> {
-    return this._effects.createDelay(time, feedback);
+  createDelay(time: number = 0.3, feedback: number = 0.4): WAAudioDelay {
+    const delay = new WAAudioDelay(this._context);
+    delay.setTime(time).setFeedback(feedback);
+    return delay;
   }
   
-  /** 创建失真 */
-  createDistortion(amount: number = 50): ReturnType<WAAudioEffects['createDistortion']> {
-    return this._effects.createDistortion(amount);
+  createDistortion(amount: number = 50): WAAudioDistortion {
+    return new WAAudioDistortion(this._context).setAmount(amount);
   }
   
-  /** 创建低通滤波器 */
-  createLowpass(frequency: number = 1000): ReturnType<WAAudioEffects['createLowpass']> {
-    return this._effects.createLowpass(frequency);
+  createLowpass(frequency: number = 1000): BiquadFilterNode {
+    const filter = this._context.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = frequency;
+    return filter;
   }
   
-  /** 创建高通滤波器 */
-  createHighpass(frequency: number = 500): ReturnType<WAAudioEffects['createHighpass']> {
-    return this._effects.createHighpass(frequency);
+  createHighpass(frequency: number = 500): BiquadFilterNode {
+    const filter = this._context.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = frequency;
+    return filter;
   }
   
-  // ============================================
-  // 分析器创建
-  // ============================================
-  
-  /**
-   * 创建分析器
-   * 
-   * @param fftSize - FFT 大小 (必须是 2 的幂次)
-   */
+  // 分析器
   createAnalyser(fftSize: number = 2048): WAAudioAnalyser {
     return new WAAudioAnalyser(this._context, fftSize);
   }
   
-  // ============================================
-  // 录音功能
-  // ============================================
-  
-  /**
-   * 创建录音机
-   */
+  // 录音
   createRecorder(): WAAudioRecorder {
     return new WAAudioRecorder(this._context);
   }
   
-  // ============================================
-  // 上下文控制
-  // ============================================
-  
-  /** 暂停 */
+  // 控制
   suspend(): Promise<void> {
     return this._context.suspend();
   }
   
-  /** 恢复 */
   resume(): Promise<void> {
     return this._context.resume();
   }
   
-  /** 关闭 */
   close(): Promise<void> {
     return this._context.close();
   }
   
-  // ============================================
-  // 实用工具
-  // ============================================
-  
-  /**
-   * 创建静音音频缓冲区
-   */
+  // 工具
   createSilence(duration: number): AudioBuffer {
     const buffer = this._context.createBuffer(2, this.sampleRate * duration, this.sampleRate);
     for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
@@ -286,32 +165,15 @@ export class WAAudioContext {
     }
     return buffer;
   }
-  
-  /**
-   * 连接两个节点
-   */
-  connect(from: AudioNode, to: AudioNode): void {
-    from.connect(to);
-  }
-  
-  /**
-   * 断开节点连接
-   */
-  disconnect(node: AudioNode): void {
-    node.disconnect();
-  }
 }
-
-// ============================================
-// 导出
-// ============================================
 
 export default WAAudioContext;
 
-// 类型导出
-export { WAAudioSource } from './source/file-source';
-export { WAAudioOscillator } from './source/oscillator';
-export { WAAudioAnalyser } from './analyser';
-export { WAAudioEffects } from './effects';
-export { WAAudioRecorder } from './recorder';
-export { WAAudioMixer, WAAudioTrack } from './engine/mixer';
+// 导出
+export { WAAudioSource };
+export { WAAudioOscillator };
+export { WAAudioAnalyser };
+export { WAAudioEQ, WAAudioCompressor, WAAudioReverb, WAAudioDelay, WAAudioDistortion };
+export { WAAudioEffectFactory, WAAudioEffectChain };
+export { WAAudioRecorder };
+export { WAAudioMixer, WAAudioTrack };

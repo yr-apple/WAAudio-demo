@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import WAAudioContext from '../core/index';
+  import WAAudioContext from '@core/index';
   
   // 状态
   let context: WAAudioContext;

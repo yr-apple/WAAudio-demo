@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
   import WAAudioContext from './core';
   import AudioWorkstation from './demos/workstation/AudioWorkstation.svelte';
-  import SpectrumVisualizer from './demos/analyser/SpectrumVisualizer.svelte';
   
   let currentDemo = 'workstation';
   
@@ -18,16 +17,11 @@
       <button class:active={currentDemo === 'workstation'} on:click={() => setDemo('workstation')}>
         🎚️ 音频工作站
       </button>
-      <button class:active={currentDemo === 'visualizer'} on:click={() => setDemo('visualizer')}>
-        📊 频谱可视化
-      </button>
     </div>
   </nav>
   
   {#if currentDemo === 'workstation'}
     <AudioWorkstation />
-  {:else if currentDemo === 'visualizer'}
-    <SpectrumVisualizer />
   {/if}
 </main>
 
